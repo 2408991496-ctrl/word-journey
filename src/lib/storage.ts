@@ -1,0 +1,30 @@
+import type {Backup,Session,Answer,Task,Word} from '../types';
+let connection:Promise<IDBDatabase>|undefined;
+function db(){return connection??=new Promise<IDBDatabase>((resolve,reject)=>{const r=indexedDB.open('word-journey',1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains('sessions'))r.result.createObjectStore('sessions',{keyPath:'id'});};r.onsuccess=()=>{r.result.onversionchange=()=>{r.result.close();connection=undefined;};resolve(r.result);};r.onerror=()=>{connection=undefined;reject(r.error);};r.onblocked=()=>{connection=undefined;reject(Error('请关闭其他旧版页面，然后重试保存。'));};});}
+export async function loadSessions(){const d=await db();return new Promise<Session[]>((resolve,reject)=>{const r=d.transaction('sessions').objectStore('sessions').getAll();r.onsuccess=()=>resolve((r.result as Session[]).sort((a,b)=>b.updatedAt-a.updatedAt));r.onerror=()=>reject(r.error);});}
+export async function putSessions(sessions:Session[]){const d=await db();await new Promise<void>((resolve,reject)=>{const tx=d.transaction('sessions','readwrite');sessions.forEach(s=>tx.objectStore('sessions').put(s));tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error??Error('保存已中断'));});}
+export async function deleteSession(id?:string){const d=await db();await new Promise<void>((resolve,reject)=>{const tx=d.transaction('sessions','readwrite');const store=tx.objectStore('sessions');if(id)store.delete(id);else store.clear();tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}
+function obj(x:unknown):x is Record<string,unknown>{return !!x&&typeof x==='object'&&!Array.isArray(x);}
+function text(x:unknown,max=50000):x is string{return typeof x==='string'&&x.length<=max;}
+function num(x:unknown):x is number{return typeof x==='number'&&Number.isFinite(x)&&x>=0;}
+function list(x:unknown,max:number):x is unknown[]{return Array.isArray(x)&&x.length<=max;}
+function stringList(x:unknown,max=200){return list(x,max)&&x.every(t=>text(t));}
+function word(x:unknown):x is Word{return obj(x)&&['id','word','pos','meaning','collocation','gap','sentence','translation','theme'].every(k=>text(x[k],1000))&&num(x.level);}
+function task(x:unknown):x is Task{return obj(x)&&text(x.id,200)&&['choice','cloze','order','rewrite','writing','translate','match'].includes(String(x.kind))&&num(x.stage)&&Number.isInteger(x.stage)&&x.stage<5&&['prompt','hint','structure','reference'].every(k=>text(x[k]))&&['wordId','source','answer'].every(k=>x[k]===undefined||text(x[k]))&&['options','tokens','requirements','targetWords','accepted'].every(k=>x[k]===undefined||stringList(x[k]));}
+function answer(x:unknown):x is Answer{return obj(x)&&text(x.draft)&&stringList(x.selfCheck)&&list(x.order,100)&&x.order.every(v=>num(v)&&Number.isInteger(v))&&list(x.hints,1000)&&x.hints.every(h=>obj(h)&&['wordlist','collocation','structure','reference'].includes(String(h.type))&&num(h.at))&&list(x.attempts,1000)&&x.attempts.every(a=>obj(a)&&text(a.text)&&num(a.at)&&['correct','incorrect','unknown'].includes(String(a.status))&&text(a.feedback));}
+export function validateBackup(raw:unknown):Backup{
+ if(!obj(raw)||raw.format!=='word-journey'||raw.schema!==1||!num(raw.exportedAt)||!text(raw.nickname,80)||!list(raw.sessions,1000))throw Error('这不是有效的 Word Journey v1 备份。请使用本工具导出的 JSON 文件。');
+ const ids=new Set<string>();
+ for(const s of raw.sessions){
+ if(!obj(s)||!text(s.id,200)||!s.id||ids.has(s.id)||s.schema!==1||!text(s.contentVersion,100)||!['junior','senior','cet4','cet6'].includes(String(s.book))||!['school','friends','family','health','nature','travel','volunteer'].includes(String(s.theme))||!num(s.createdAt)||!num(s.updatedAt)||(s.completedAt!==undefined&&!num(s.completedAt))||!num(s.index)||!Number.isInteger(s.index)||!list(s.words,20)||s.words.length<1||!s.words.every(word)||!list(s.tasks,100)||s.tasks.length<1||!s.tasks.every(task)||s.index>=s.tasks.length||!obj(s.answers)||Object.keys(s.answers).length>100||!Object.values(s.answers).every(answer))throw Error('备份中的训练记录结构不完整或超出范围，未导入任何数据。');
+ for(const t of s.tasks){if(t.kind==='translate'&&!['en-zh','zh-en'].includes(t.direction??''))throw Error('翻译题方向无效。');if(t.kind==='match'&&(!list(t.pairs,5)||t.pairs.length<2||!t.pairs.every(p=>obj(p)&&text(p.left,1000)&&text(p.right,1000)&&text(p.wordId,200))||!stringList(t.rightOptions,5)||t.rightOptions.length!==t.pairs.length))throw Error('连线题数据不完整。');}
+ const taskIds=new Set(s.tasks.map(t=>(t as Task).id));const wordIds=new Set(s.words.map(w=>(w as Word).id));
+ if(taskIds.size!==s.tasks.length||wordIds.size!==s.words.length||s.words.some(w=>w.theme!==s.theme)||s.tasks.some(t=>(t.wordId&&!wordIds.has(t.wordId))||t.pairs?.some(p=>!wordIds.has(p.wordId)))||Object.keys(s.answers).some(k=>!taskIds.has(k)))throw Error('备份的词汇、题目和答案关联不一致。');
+ for(const t of s.tasks){const a=s.answers[t.id] as Answer|undefined;if(a&&((new Set(a.order)).size!==a.order.length||a.order.some(i=>i>=(t.tokens?.length??0))))throw Error('备份中的词块排序记录无效。');}
+ ids.add(s.id);
+ }
+ return raw as unknown as Backup;
+}
+export function mergeBackup(existing:Session[],incoming:Session[],mode:'keep'|'newer'){const map=new Map(existing.map(s=>[s.id,s]));let added=0,replaced=0,skipped=0;for(const s of incoming){const old=map.get(s.id);if(!old){map.set(s.id,s);added++;}else if(mode==='newer'&&s.updatedAt>old.updatedAt){map.set(s.id,s);replaced++;}else skipped++;}return {sessions:[...map.values()].sort((a,b)=>b.updatedAt-a.updatedAt),added,replaced,skipped};}
+export function download(name:string,content:string,type:string){const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);}
+export function exportBackup(sessions:Session[],nickname:string){const data:Backup={format:'word-journey',schema:1,exportedAt:Date.now(),nickname,sessions};download(`WordJourney_进度备份_${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(data,null,2),'application/json');}

@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/glowtextarea.tsx","./src/training.tsx","./src/components.tsx","./src/main.tsx","./src/types.ts","./src/content/words.ts","./src/content/writing.ts","./src/lib/storage.ts","./src/lib/training.ts","./tests/training.test.ts","./vite.config.ts"],"version":"5.7.3"}
