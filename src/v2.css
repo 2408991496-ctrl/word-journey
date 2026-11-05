@@ -10,3 +10,8 @@ body{overflow:hidden}.app-shell{height:100dvh;min-height:0;overflow:hidden}.topb
 .matching-lines{margin-left:-23px;margin-right:-23px;pointer-events:none;z-index:2}@media(max-width:767px){.matching-lines{margin-left:-12px;margin-right:-12px}}
 
 .target-word-tags .word-used{background:#e0efe5;color:#246346;border-color:#9cc5a9}
+
+.ai-notice{font-size:12px;color:#746d85;line-height:1.6;margin:0 0 12px}
+.ai-error{padding:10px 16px;background:#fff1ed;color:#a13e2d;font-size:13px;max-height:100px;overflow:auto}
+.feedback-short:has(.ai-feedback-text){max-height:30vh;overflow:auto;align-items:flex-start;flex-shrink:0}
+.ai-feedback-text{white-space:pre-wrap;line-height:1.65;overflow-wrap:anywhere}
