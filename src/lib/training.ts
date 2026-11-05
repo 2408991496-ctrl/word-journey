@@ -1,5 +1,5 @@
 import type {Answer,BookId,Session,Task,ThemeId,Word} from '../types';
-import {CONTENT_VERSION,sentence,themeWords,words} from '../content/words';
+import {CONTENT_VERSION,sentence,themeWords,words,themes} from '../content/words';
 import {writing,writingReference,rewriteSources} from '../content/writing';
 export const stages=['认识单词','搭配练习','写句子','写作文'];
 export function stageOf(task:Task){if(task.kind==='writing')return 3;if(task.kind==='rewrite'||task.kind==='order')return 2;if(task.kind==='cloze'||task.kind==='match')return 1;if(task.kind==='translate'||task.id.startsWith('meaning-'))return 0;return Math.min(3,task.stage);}
@@ -20,12 +20,16 @@ export function tasksFor(selected:Word[],book:BookId,theme:ThemeId):Task[]{
  if(pairs.length>=2){const rightOptions=shuffled(pairs.map(p=>p.right),theme+'matching');tasks.push({id:`match-${theme}`,kind:'match',stage:1,prompt:'连接左右两侧，组成搭配',pairs,rightOptions,answer:JSON.stringify(pairs.map(p=>rightOptions.indexOf(p.right))),hint:'先选择左侧，再选择右侧；再次选择可以修改连线。',structure:'按本组学过的搭配配对。',reference:pairs.map(p=>`${p.left} ${p.right}`).join('\n')});}
  const focus=selected.filter((_,i)=>i%5===0);
  for(const w of focus){const original=rewriteSources[w.word];tasks.push({id:`rewrite-${w.id}`,stage:2,kind:'rewrite',wordId:w.id,prompt:original?`用 ${w.word} 改写句子`:`用 ${w.word} 写句子`,source:original??w.translation,answer:sentence(w),hint:`搭配：${w.collocation}`,structure:sentence(w).split(' ').slice(0,2).join(' ')+' …',reference:sentence(w),requirements:['保留主要信息','使用目标词和合适搭配','检查主语、动词和句子是否完整']});}
- const p=writing[theme];tasks.push({id:`writing-${theme}`,stage:3,kind:'writing',prompt:p.title,source:p.intro,hint:'按题目要点依次组织内容。',structure:'说明目的或背景 → 具体行动 → 感受或期待。',reference:writingReference(theme,book),requirements:p.requirements,targetWords:selected.map(w=>w.word)});
+ const p=writing[theme];tasks.push({id:`writing-${theme}`,stage:3,kind:'writing',prompt:p.title,source:p.intro+'\n本次词汇任务：'+selected.map(w=>w.word).join('、')+'。请围绕题目情境组织这些词，不要只罗列单词。',hint:'按题目要点依次组织内容。',structure:'说明目的或背景 → 具体行动 → 感受或期待。',reference:writingReference(theme,book)+'\n\n本组词汇参考句（请根据作文内容调整衔接）：\n'+selected.map(w=>sentence(w)).join('\n'),requirements:[...p.requirements,`至少使用本组 ${Math.min(3,selected.length)} 个不同目标词，并结合学过的搭配表达。`,`可结合以下表达安排内容：${selected.slice(0,3).map(w=>w.collocation).join('；')}。`],targetWords:selected.map(w=>w.word)});
  return tasks;
 }
 export function createSession(book:BookId,theme:ThemeId,selected:Word[]):Session{const now=Date.now();return {id:crypto.randomUUID(),schema:1,contentVersion:CONTENT_VERSION,book,theme,words:structuredClone(selected),tasks:tasksFor(selected,book,theme),answers:{},index:0,createdAt:now,updatedAt:now};}
 export function judge(task:Task,text:string):{status:'correct'|'incorrect'|'unknown';feedback:string}{
- if(task.kind==='writing'||task.kind==='rewrite')return {status:'unknown',feedback:'已记录，待对照参考或老师核对。'};
+ if(task.kind==='writing'){
+ const target=task.targetWords??[];const used=usedTargetWords(task,text);const needed=Math.min(3,target.length);
+ return {status:'unknown',feedback:`词汇要求${used.length>=needed?'达标':'未达标'}：已使用 ${used.length}/${needed} 个不同目标词${used.length?'（'+used.join('、')+'）':''}。${used.length<needed?'请补充本组词汇。':''}此项仅检查词形出现，内容、搭配和语法请对照参考核对。`};
+ }
+ if(task.kind==='rewrite')return normalize(text)===normalize(task.answer??'')?{status:'correct',feedback:'与参考表达一致。'}:{status:'unknown',feedback:'已自动核对：'+(task.wordId?'请确认使用目标词和搭配。':'')+'表达可能有多种答案，语法和含义请对照参考核对。'};
  if(task.kind==='match'){try{const value=JSON.parse(text);if(JSON.stringify(value)===task.answer)return {status:'correct',feedback:'配对正确。'};}catch{}return {status:'incorrect',feedback:'部分搭配未匹配，请检查连线。'};}
  const valid=[task.answer??'',...(task.accepted??[])].map(normalize);const n=normalize(text);
  if(valid.includes(n))return {status:'correct',feedback:'正确。'};
@@ -36,3 +40,7 @@ export function displayAnswer(task:Task,text:string){if(task.kind!=='match')retu
 export function summary(s:Session){const objective=s.tasks.filter(t=>!['writing','rewrite'].includes(t.kind));const answered=objective.filter(t=>s.answers[t.id]?.attempts.length);const correct=objective.filter(t=>s.answers[t.id]?.attempts[0]?.status==='correct');const submitted=s.tasks.filter(t=>s.answers[t.id]?.attempts.length);return {objective:objective.length,answered:answered.length,correct:correct.length,submitted:submitted.length,total:s.tasks.length,revisions:Object.values(s.answers).reduce((n,a)=>n+a.attempts.filter((v,i)=>i>0&&v.text!==a.attempts[i-1].text).length,0),hints:Object.values(s.answers).reduce((n,a)=>n+a.hints.length,0),open:s.tasks.filter(t=>['writing','rewrite'].includes(t.kind)&&s.answers[t.id]?.attempts.length).length};}
 export function reviewWords(s:Session){return s.words.filter(w=>s.tasks.some(t=>(t.wordId===w.id||t.pairs?.some(p=>p.wordId===w.id))&&((s.answers[t.id]?.attempts[0]?.status==='incorrect')||(s.answers[t.id]?.hints.length??0)>0))||s.tasks.some(t=>t.kind==='writing'&&(s.answers[t.id]?.hints.length??0)>0));}
 export function wordCount(s:string){return (s.match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g)??[]).length;}
+
+export function usedTargetWords(task:Task,text:string){const tokens=new Set(normalize(text).split(' '));return (task.targetWords??[]).filter(w=>{const base=w.toLowerCase();const forms=[base,base+'s',base+'es',base+'d',base+'ed',base+'ing',base.endsWith('e')?base.slice(0,-1)+'ing':'',base.endsWith('y')?base.slice(0,-1)+'ies':'',base.endsWith('y')?base.slice(0,-1)+'ied':''];return forms.some(f=>f&&tokens.has(f));});}
+
+export function nextGroupTheme(book:BookId,history:Session[]):ThemeId{return themes.map(t=>({id:t.id,used:history.filter(s=>s.book===book&&s.theme===t.id).reduce((n,s)=>n+s.words.length,0)})).sort((a,b)=>a.used-b.used)[0].id;}

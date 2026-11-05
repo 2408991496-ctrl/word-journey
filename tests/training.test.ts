@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import 'fake-indexeddb/auto';
 import {books,themes,words,themeWords,sentence} from '../src/content/words';
-import {createSession,selectWords,judge,blankAnswer,summary,reviewWords,stageOf,displayAnswer} from '../src/lib/training';
+import {createSession,selectWords,judge,blankAnswer,summary,reviewWords,stageOf,displayAnswer,nextGroupTheme,usedTargetWords} from '../src/lib/training';
 import {validateBackup,mergeBackup,putSessions,loadSessions,deleteSession} from '../src/lib/storage';
 test('all 560 book/theme/count combinations have complete word and task coverage',()=>{
  for(const b of books)for(const t of themes)for(let n=1;n<=20;n++){
@@ -23,3 +23,18 @@ test('IndexedDB persists task snapshots, draft, attempts, hints, and handles del
 test('translation accepts configured senses and spelling variants; unknown Chinese is not marked wrong',()=>{const s=createSession('senior','school',selectWords('senior','school',1,[]));const zh=s.tasks.find(t=>t.direction==='en-zh')!;assert.equal(judge(zh,zh.answer!).status,'correct');assert.equal(judge(zh,'另一个合理释义').status,'unknown');});
 test('legacy snapshots keep original task IDs and answers while displaying four sections',()=>{const old={id:'old',kind:'writing',stage:4} as any;assert.equal(stageOf(old),3);assert.equal(old.stage,4);assert.equal(stageOf({id:'meaning-old',kind:'choice',stage:0} as any),0);assert.equal(stageOf({id:'old-order',kind:'order',stage:2} as any),2);});
 test('matching snapshots and human-readable reports survive backup validation',()=>{const s=createSession('senior','friends',selectWords('senior','friends',4,[]));const t=s.tasks.find(t=>t.kind==='match')!;assert(t);s.answers[t.id]={...blankAnswer(),draft:t.answer!,attempts:[{text:t.answer!,at:Date.now(),...judge(t,t.answer!)}]};assert(displayAnswer(t,t.answer!).includes('→'));assert(validateBackup({format:'word-journey',schema:1,exportedAt:Date.now(),nickname:'',sessions:[s]}));assert.throws(()=>validateBackup({format:'word-journey',schema:1,exportedAt:Date.now(),nickname:'',sessions:[{...s,tasks:s.tasks.map(x=>x.id===t.id?{...x,pairs:[{}]}:x)}]}));});
+
+
+test('automatic groups rotate contexts and writing requirements follow selected words',()=>{
+ const first=nextGroupTheme('senior',[]);const selected=selectWords('senior',first,10,[]);const session=createSession('senior',first,selected);
+ assert.notEqual(nextGroupTheme('senior',[session]),first);
+ const essay=session.tasks.find(t=>t.kind==='writing')!;
+ assert.deepEqual(essay.targetWords,selected.map(w=>w.word));
+ for(const w of selected)assert(essay.source!.includes(w.word));
+ assert(judge(essay,'Nothing here.').feedback.includes('未达标'));
+ assert(judge(essay,selected.slice(0,3).map(w=>w.word).join(' ')).feedback.includes('达标'));
+ assert.equal(judge(essay,'A natural different essay.').status,'unknown');
+ assert.equal(usedTargetWords({...essay,targetWords:['share']},'shared ideas').length,1);
+ assert.equal(usedTargetWords({...essay,targetWords:['share']},'shareholder').length,0);
+ assert.equal(validateBackup({format:'word-journey',schema:1,exportedAt:Date.now(),nickname:'',sessions:[session]}).sessions.length,1);
+});
