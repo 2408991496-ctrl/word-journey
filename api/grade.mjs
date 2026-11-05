@@ -33,7 +33,12 @@ export function createHandler({fetcher=fetch,env=process.env,now=Date.now}={}){
  const ip=String(req.headers['x-forwarded-for']??req.socket?.remoteAddress??'unknown').split(',')[0].trim();
  const bucket=buckets.get(ip)??{at:time,count:0};if(bucket.count>=10||active>=2){res.setHeader('Retry-After','30');fail(429,'批改请求较多，请稍等30秒再试。');}if(buckets.size>=2000&&!buckets.has(ip))fail(429,'当前请求较多，请稍后再试。');bucket.count++;buckets.set(ip,bucket);active++;acquired=true;
  const response=await fetcher('https://open.bigmodel.cn/api/paas/v4/chat/completions',{method:'POST',headers:{Authorization:`Bearer ${env.AI_API_KEY}`,'Content-Type':'application/json'},signal:AbortSignal.timeout(45000),body:JSON.stringify({model:MODEL,messages:[{role:'system',content:SYSTEM},{role:'user',content:JSON.stringify(input)}],thinking:{type:'disabled'},response_format:{type:'json_object'},max_tokens:2200,temperature:0.2})});
- if(!response.ok){if(response.status===401||response.status===403)fail(503,'智谱密钥无效或无模型权限，请老师检查AI_API_KEY。');if(response.status===429)fail(429,'智谱调用频率已达限制，请稍后重试。');fail(502,'智谱服务暂时不可用，请稍后重试。');}
+ if(!response.ok){if(response.status===401||response.status===403)fail(503,'智谱密钥无效或无模型权限，请老师检查AI_API_KEY。');if(response.status===429){
+ let detail;try{detail=await response.json();}catch{}
+ const code=String(detail?.error?.code??'');
+ const messages={'1113':'智谱返回账户欠费，请在智谱控制台检查账户状态；先确认原因，无需立即充值。','1302':'智谱账户达到速率或并发限制，请关闭其他批改页面，稍等后重试。','1305':'智谱模型当前繁忙，请稍后重试。','1308':'智谱当前使用额度已达上限，请在控制台查看重置时间。','1310':'智谱账户达到每周或每月使用上限，请检查额度。','1311':'智谱当前套餐未开放该模型权限，请检查标准API权限。','1315':'此密钥仅限企业编程套餐，请改用智谱标准API Key。'};
+ fail(429,(messages[code]??'智谱拒绝了本次请求，请在智谱控制台检查账户限额及模型权限。')+(code&&/^\d{4}$/.test(code)?`（错误码 ${code}）`:'（HTTP 429）'));
+ }fail(502,'智谱服务暂时不可用，请稍后重试。');}
  const result=await response.json();return send(200,parseGrade(result.choices?.[0]?.message?.content));
  }catch(e){const timeout=e?.name==='TimeoutError'||e?.name==='AbortError';return send(timeout?504:Number.isInteger(e?.code)?e.code:502,{error:timeout?'AI批改超时，答案已保留，请重试。':Number.isInteger(e?.code)?e.message:'AI批改暂时失败，答案已保留，请稍后重试。'});}finally{if(acquired)active--;}
  };
